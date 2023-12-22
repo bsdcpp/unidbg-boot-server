@@ -1,40 +1,49 @@
 package com.anjia.unidbgserver.service;
 
+import com.alibaba.fastjson.JSONException;
+import com.alibaba.fastjson.JSONObject;
 import com.anjia.unidbgserver.config.UnidbgProperties;
 import com.anjia.unidbgserver.utils.TempFileUtils;
 import com.github.unidbg.*;
-import com.github.unidbg.arm.HookStatus;
+import com.github.unidbg.Module;
 import com.github.unidbg.arm.backend.DynarmicFactory;
-import com.github.unidbg.arm.context.Arm32RegisterContext;
-import com.github.unidbg.arm.context.RegisterContext;
-import com.github.unidbg.hook.HookContext;
-import com.github.unidbg.hook.ReplaceCallback;
-import com.github.unidbg.hook.hookzz.*;
-import com.github.unidbg.hook.xhook.IxHook;
 import com.github.unidbg.linux.android.AndroidEmulatorBuilder;
 import com.github.unidbg.linux.android.AndroidResolver;
-import com.github.unidbg.linux.android.XHookImpl;
+import com.github.unidbg.linux.android.dvm.AbstractJni;
+import com.github.unidbg.linux.android.dvm.BaseVM;
 import com.github.unidbg.linux.android.dvm.DalvikModule;
 import com.github.unidbg.linux.android.dvm.DvmClass;
+import com.github.unidbg.linux.android.dvm.DvmObject;
+import com.github.unidbg.linux.android.dvm.StringObject;
 import com.github.unidbg.linux.android.dvm.VM;
-import com.github.unidbg.linux.android.dvm.array.ByteArray;
+import com.github.unidbg.linux.android.dvm.VaList;
+import com.github.unidbg.linux.android.dvm.array.ArrayObject;
 import com.github.unidbg.memory.Memory;
-import com.github.unidbg.utils.Inspector;
-import com.sun.jna.Pointer;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.URLDecoder;
+import java.security.MessageDigest;
+import java.util.Base64;
+import java.util.Map;
+import java.util.UUID;
+import java.util.zip.InflaterInputStream;
+
+import org.apache.commons.codec.digest.MessageDigestAlgorithms;
+import org.springframework.beans.propertyeditors.CustomBooleanEditor;
 
 @Slf4j
-public class TTEncryptService {
+public class TTEncryptService extends AbstractJni {
 
     private final AndroidEmulator emulator;
     private final VM vm;
     private final Module module;
 
     private final DvmClass TTEncryptUtils;
-    private final static String TT_ENCRYPT_LIB_PATH = "data/apks/so/libttEncrypt.so";
+    private final static String TT_ENCRYPT_LIB_PATH = "data/apks/so/libvolleydemo.so";
     private final Boolean DEBUG_FLAG;
 
     @SneakyThrows TTEncryptService(UnidbgProperties unidbgProperties) {
@@ -64,7 +73,11 @@ public class TTEncryptService {
 
         dm.callJNI_OnLoad(emulator);
 
-        TTEncryptUtils = vm.resolveClass("com/bytedance/frameworks/core/encrypt/TTEncryptUtils");
+        vm.setJni(this);
+
+        //TTEncryptUtils = vm.resolveClass("com/bytedance/frameworks/core/encrypt/TTEncryptUtils");
+        //Java_com_android_awsomedemo_DemoTool_socialELux
+        TTEncryptUtils = vm.resolveClass("com/android/awsomedemo/DemoTool");
     }
 
     public void destroy() throws IOException {
@@ -73,109 +86,102 @@ public class TTEncryptService {
             log.info("destroy");
         }
     }
-
-    public byte[] ttEncrypt(String body) {
-        if (DEBUG_FLAG) {
-            // 在libttEncrypt.so模块中查找sbox0导出符号
-            Symbol sbox0 = module.findSymbolByName("sbox0");
-            Symbol sbox1 = module.findSymbolByName("sbox1");
-            // 打印sbox0导出符号在unicorn中的内存数据
-            Inspector.inspect(sbox0.createPointer(emulator).getByteArray(0, 256), "sbox0");
-            Inspector.inspect(sbox1.createPointer(emulator).getByteArray(0, 256), "sbox1");
-            // 加载HookZz，支持inline hook，文档看https://github.com/jmpews/HookZz
-            IHookZz hookZz = HookZz.getInstance(emulator);
-            // 测试enable_arm_arm64_b_branch，可有可无
-            hookZz.enable_arm_arm64_b_branch();
-            // inline wrap导出函数
-            hookZz.wrap(module.findSymbolByName("ss_encrypt"), new WrapCallback<RegisterContext>() {
-                @Override
-                public void preCall(Emulator<?> emulator, RegisterContext ctx, HookEntryInfo info) {
-                    Pointer pointer = ctx.getPointerArg(2);
-                    int length = ctx.getIntArg(3);
-                    byte[] key = pointer.getByteArray(0, length);
-                    Inspector.inspect(key, "ss_encrypt key");
-                }
-
-                @Override
-                public void postCall(Emulator<?> emulator, RegisterContext ctx, HookEntryInfo info) {
-                    System.out.println("ss_encrypt.postCall R0=" + ctx.getLongArg(0));
-                }
-            });
-            hookZz.disable_arm_arm64_b_branch();
-            // 通过base+offset inline wrap内部函数，在IDA看到为sub_xxx那些
-            hookZz.instrument(module.base + 0x00000F5C + 1, new InstrumentCallback<Arm32RegisterContext>() {
-                @Override
-                public void dbiCall(Emulator<?> emulator, Arm32RegisterContext ctx, HookEntryInfo info) {
-                    System.out.println("R3=" + ctx.getLongArg(3) + ", R10=0x" + Long.toHexString(ctx.getR10Long()));
-                }
-            });
-
-            Dobby dobby = Dobby.getInstance(emulator);
-            // 使用Dobby inline hook导出函数
-            dobby.replace(module.findSymbolByName("ss_encrypted_size"), new ReplaceCallback() {
-                @Override
-                public HookStatus onCall(Emulator<?> emulator, HookContext context, long originFunction) {
-                    System.out.println("ss_encrypted_size.onCall arg0=" + context.getIntArg(0) + ", originFunction=0x" + Long.toHexString(originFunction));
-                    return HookStatus.RET(emulator, originFunction);
-                }
-
-                @Override
-                public void postCall(Emulator<?> emulator, HookContext context) {
-                    System.out.println("ss_encrypted_size.postCall ret=" + context.getIntArg(0));
-                }
-            }, true);
-            // 加载xHook，支持Import hook，文档看https://github.com/iqiyi/xHook
-            IxHook xHook = XHookImpl.getInstance(emulator);
-            // hook libttEncrypt.so的导入函数strlen
-            xHook.register("libttEncrypt.so", "strlen", new ReplaceCallback() {
-                @Override
-                public HookStatus onCall(Emulator<?> emulator, HookContext context, long originFunction) {
-                    Pointer pointer = context.getPointerArg(0);
-                    String str = pointer.getString(0);
-                    System.out.println("strlen=" + str);
-                    context.push(str);
-                    return HookStatus.RET(emulator, originFunction);
-                }
-
-                @Override
-                public void postCall(Emulator<?> emulator, HookContext context) {
-                    System.out.println("strlen=" + context.pop() + ", ret=" + context.getIntArg(0));
-                }
-            }, true);
-            xHook.register("libttEncrypt.so", "memmove", new ReplaceCallback() {
-                @Override
-                public HookStatus onCall(Emulator<?> emulator, long originFunction) {
-                    RegisterContext context = emulator.getContext();
-                    Pointer dest = context.getPointerArg(0);
-                    Pointer src = context.getPointerArg(1);
-                    int length = context.getIntArg(2);
-                    Inspector.inspect(src.getByteArray(0, length), "memmove dest=" + dest);
-                    return HookStatus.RET(emulator, originFunction);
-                }
-            });
-            xHook.register("libttEncrypt.so", "memcpy", new ReplaceCallback() {
-                @Override
-                public HookStatus onCall(Emulator<?> emulator, long originFunction) {
-                    RegisterContext context = emulator.getContext();
-                    Pointer dest = context.getPointerArg(0);
-                    Pointer src = context.getPointerArg(1);
-                    int length = context.getIntArg(2);
-                    Inspector.inspect(src.getByteArray(0, length), "memcpy dest=" + dest);
-                    return HookStatus.RET(emulator, originFunction);
-                }
-            });
-            // 使Import hook生效
-            xHook.refresh();
+    @Override
+    public DvmObject<?> callStaticObjectMethodV(BaseVM vm, DvmClass dvmClass, String signature, VaList vaList) {
+        switch (signature) {
+            case "com/android/awsomedemo/DemoTool->md5([B)Ljava/lang/String;":
+                //return vm.resolveClass("com/android/awsomedemo/DemoTool").newObject(null);
+                // return new StringObject(vm,"/sdcard/");
+                int intArg = vaList.getIntArg(0);
+                Object argobj = vm.getObject(intArg).getValue();
+                String md5s = md5((byte[]) argobj);
+                System.out.printf(">>>>>>>>>>>>>>>|%s|<<<<<<<<<<<<<<\n", md5s);
+                StringObject ret = new StringObject(vm, md5s);
+                vm.addLocalObject(ret);
+                return ret;
         }
+        return super.callStaticObjectMethodV(vm, dvmClass, signature, vaList);
+    }
 
-        //if (DEBUG_FLAG) {
-        //    // 附加IDA android_server，可输入c命令取消附加继续运行
-        //    emulator.attach(DebuggerType.ANDROID_SERVER_V7);
-        //}
-        byte[] data = new byte[16];
+     public static String md5(byte[] str) {
+        try {
+            MessageDigest messageDigest = MessageDigest.getInstance(MessageDigestAlgorithms.MD5);
+            messageDigest.update(str);
+            byte[] digest = messageDigest.digest();
+            StringBuffer stringBuffer = new StringBuffer("");
+            for (int i = 0; i < digest.length; i++) {
+                int i2 = digest[i];
+                if (i2 < 0) {
+                    i2 += 256;
+                }
+                if (i2 < 16) {
+                    stringBuffer.append(CustomBooleanEditor.VALUE_0);
+                }
+                stringBuffer.append(Integer.toHexString(i2));
+            }
+            return stringBuffer.toString();
+        } catch (Exception unused) {
+            return UUID.randomUUID().toString();
+        }
+    }
+    private static String w3(byte[] bArr) throws IOException {
+        byte[] bArr2 = new byte[bArr.length + 1];
+        System.arraycopy(bArr, 0, bArr2, 0, bArr.length);
+        bArr2[bArr.length] = 0;
+        InflaterInputStream inflaterInputStream = new InflaterInputStream(new ByteArrayInputStream(bArr));
+        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream(512);
+        while (true) {
+            int read = inflaterInputStream.read();
+            if (read == -1) {
+                byteArrayOutputStream.close();
+                return byteArrayOutputStream.toString();
+            }
+            byteArrayOutputStream.write(read);
+        }
+    }
+
+    public JSONObject ttEncrypt(Map<String, String> headers, Map<String, String> params) throws JSONException, IOException {
+        String token = params.get("X-TK");
+        String x_no = params.get("X-NO");
+        String x_ts = params.get("X-TS");
+        String x_appid = params.get("X-APPID");
+        String x_uid = params.get("X-UID");
+        String x_ver = params.getOrDefault("X-VER", "2.128.0"); //2.128.0 固定，否则每次都要更新so
+        String x_mk = params.get("X-MK");
+        String x_dt = params.get("X-DT");
+        String x_body = params.getOrDefault("X-BODY", "");
         // 执行Jni方法
-        ByteArray array = TTEncryptUtils.callStaticJniMethodObject(emulator, "ttEncrypt([BI)[B", new ByteArray(vm, data), data.length);
-        return array.getValue();
+        String equinn = TTEncryptUtils.callStaticJniMethodObject(emulator, "socialEQuinn()Ljava/lang/String;").toString().replace("\"", "");//9a7AzQUF9s5YQP6UGZKn8oRrkuZHJQ
+        String[] strArr = new String[] {
+            token, x_no, equinn, // "9a7AzQUF9s5YQP6UGZKn8oRrkuZHJQ",
+            x_ts, x_appid, x_uid,
+            x_ver, "2", x_mk
+        };
+       
+        for (String str : strArr) {
+            System.out.println(str);
+        }
+        // ArrayObject arrayObject = ArrayObject.newStringArray(vm, strArr);
+        String key = TTEncryptUtils.callStaticJniMethodObject(emulator, "socialESona([Ljava/lang/String;)Ljava/lang/String;", 
+            ArrayObject.newStringArray(vm, strArr)).toString().replace("\"", "");
+
+        String urldec_xdt = URLDecoder.decode(x_dt, "UTF-8");
+        String dec_xdt = TTEncryptUtils.callStaticJniMethodObject(emulator,
+                "socialEJinx(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                key, urldec_xdt).toString();
+        // 将获取的json数据封装一层，然后在给返回
+        JSONObject ret = new JSONObject();
+        ret.put("X-DT", dec_xdt);
+        if (x_body.length() > 0) {
+            String urldec_xbody = URLDecoder.decode(x_body, "UTF-8");
+            String dec_xbody = TTEncryptUtils.callStaticJniMethodObject(emulator,
+                    "socialEJinx(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                    key, urldec_xbody).toString();
+            String unzip_xbody = w3(Base64.getDecoder().decode(dec_xbody.replace("\"", "")));
+            ret.put("X-BODY", unzip_xbody);
+        }
+        return ret;
+
     }
 
 }

@@ -1,12 +1,18 @@
 package com.anjia.unidbgserver.web;
 
+import com.alibaba.fastjson.JSONObject;
 import com.anjia.unidbgserver.service.TTEncryptServiceWorker;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
 
 import javax.annotation.Resource;
 
@@ -33,13 +39,22 @@ public class TTEncryptController {
      *
      * @return 结果
      */
-    @SneakyThrows @RequestMapping(value = "encrypt", method = {RequestMethod.GET, RequestMethod.POST})
-    public byte[] ttEncrypt() {
-        String key1 = "key1";
-        String body = "body";
+    @SneakyThrows @RequestMapping(value = "encrypt", method = {RequestMethod.GET, RequestMethod.POST}, produces = "application/json;charset=UTF-8")
+    public String ttEncrypt(@RequestHeader(required = true) Map<String, String> headers, @RequestParam(required = false) Map<String, String> params) {
         // 演示传参
-        byte[] result = ttEncryptServiceWorker.ttEncrypt(key1, body).get();
-        log.info("入参:key1:{},body:{},result:{}", key1, body, result);
-        return result;
-    }
+        printMap(params);
+        JSONObject result = ttEncryptServiceWorker.ttEncrypt(headers, params).get();
+        log.info("入参:params:{},result:{}", params, result);
+        return result.toString();
+     }
+
+     private void printMap(Map<String, String> params) {
+         System.out.println("--------------------");
+         for (String name : params.keySet()) {
+             String value = new String(params.get(name));
+             System.out.println(name + ": " + value);
+         }
+         System.out.println("--------------------");
+     }
+
 }

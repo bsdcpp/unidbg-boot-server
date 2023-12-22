@@ -1,5 +1,7 @@
 package com.anjia.unidbgserver.service;
 
+import com.alibaba.fastjson.JSONException;
+import com.alibaba.fastjson.JSONObject;
 import com.anjia.unidbgserver.config.UnidbgProperties;
 import com.github.unidbg.worker.Worker;
 import com.github.unidbg.worker.WorkerPool;
@@ -11,6 +13,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -60,29 +64,29 @@ public class TTEncryptServiceWorker extends Worker {
 
     @Async
     @SneakyThrows
-    public CompletableFuture<byte[]> ttEncrypt(String key1, String body) {
+    public CompletableFuture<JSONObject> ttEncrypt(Map<String, String> headers, Map<String, String> params) {
 
         TTEncryptServiceWorker worker;
-        byte[] data;
+        JSONObject data;
         if (this.unidbgProperties.isAsync()) {
             while (true) {
                 if ((worker = pool.borrow(2, TimeUnit.SECONDS)) == null) {
                     continue;
                 }
-                data = worker.doWork(key1, body);
+                data = worker.doWork(headers, params);
                 pool.release(worker);
                 break;
             }
         } else {
             synchronized (this) {
-                data = this.doWork(key1, body);
+                data = this.doWork(headers, params);
             }
         }
         return CompletableFuture.completedFuture(data);
     }
 
-    private byte[] doWork(String key1, String body) {
-        return ttEncryptService.ttEncrypt(body);
+    private JSONObject doWork(Map<String, String> headers, Map<String, String> params) throws JSONException, IOException {
+        return ttEncryptService.ttEncrypt(headers, params);
     }
 
     @SneakyThrows
